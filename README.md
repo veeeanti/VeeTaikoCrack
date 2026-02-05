@@ -27,5 +27,5 @@ There's not much else to say about it, other than this shit is hard. lol
 
 ## Credits
 
-@KirigiriX is to thank for the idea to use a BepInEx plugin this way, her repo "NekogiriFix" is where I pulled inspiration from originally (my GorillaCrack, now private, was based heavily on it) and then seeing more of what she's made for other games and more than successfully.
+[Kirigiri's](https://github.com/KirigiriX) is to thank for the idea to use a BepInEx plugin this way, her repo ["NekogiriFix"](https://github.com/KirigiriX/NekogiriFix) is where I pulled inspiration from originally (my GorillaCrack, now private, was based heavily on it) and then seeing more of what she's made for other games and more than successfully.
 Thank you Kirigiri!
