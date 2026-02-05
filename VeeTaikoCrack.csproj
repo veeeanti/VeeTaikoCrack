@@ -24,19 +24,19 @@
 
   <ItemGroup>
   <Reference Include="Assembly-CSharp">
-    <HintPath>C:\Program Files (x86)\Steam\steamapps\common\Taiko no Tatsujin Rhythm Festival\BepInEx\interop\Assembly-CSharp.dll</HintPath>
+    <HintPath>.\deps\Assembly-CSharp.dll</HintPath>
   </Reference>
 
   <Reference Include="com.rlabrecque.steamworks.net">
-    <HintPath>C:\Program Files (x86)\Steam\steamapps\common\Taiko no Tatsujin Rhythm Festival\BepInEx\interop\com.rlabrecque.steamworks.net.dll</HintPath>
+    <HintPath>.\deps\com.rlabrecque.steamworks.net.dll</HintPath>
   </Reference>
 
   <Reference Include="PlayFab">
-    <HintPath>C:\Program Files (x86)\Steam\steamapps\common\Taiko no Tatsujin Rhythm Festival\BepInEx\interop\PlayFab.dll</HintPath>
+    <HintPath>.\deps\PlayFab.dll</HintPath>
   </Reference>
   
   <Reference Include="UnityEngine.CoreModule">
-    <HintPath>C:\Program Files (x86)\Steam\steamapps\common\Taiko no Tatsujin Rhythm Festival\BepInEx\interop\UnityEngine.CoreModule.dll</HintPath>
+    <HintPath>.\deps\UnityEngine.CoreModule.dll</HintPath>
   </Reference>
 </ItemGroup>
 </Project>
