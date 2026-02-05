@@ -1,7 +1,5 @@
 ## Requirements
 - .NET SDK 6.0
-- BepInEx core IL2CPP dependencies via Nuget
-  - (It gets installed with the others)
  
 ## Instructions
 - Make sure you have [.NET SDK 6.0 installed](https://dotnet.microsoft.com/en-us/download/dotnet/thank-you/sdk-6.0.428-windows-x64-installer)
