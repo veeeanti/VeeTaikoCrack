@@ -1,9 +1,7 @@
-﻿using System;
-using BepInEx;
+﻿using BepInEx;
 using BepInEx.Logging;
 using BepInEx.IL2CPP;
 using HarmonyLib;
-using Steamworks;
 
 namespace VeeTaikoCrack;
 
