@@ -1,4 +1,5 @@
 using System;
+using System.IO;
 using BepInEx;
 using HarmonyLib;
 using Steamworks;
@@ -9,12 +10,40 @@ namespace VeeTaikoCrack
     public static class CompleteSteamPatches
     {
         private const int SPOOFED_APP_ID = 480;
+        private static bool _appIdFileCreated = false;
+
+        static CompleteSteamPatches()
+        {
+            ForceAppId();
+        }
+
+        private static void ForceAppId()
+        {
+            if (_appIdFileCreated) return;
+
+            try
+            {
+                string appIdFile = Path.Combine(AppDomain.CurrentDomain.BaseDirectory, "steam_appid.txt");
+                File.WriteAllText(appIdFile, SPOOFED_APP_ID.ToString());
+                Plugin.Log.LogInfo($"Created steam_appid.txt with App ID {SPOOFED_APP_ID} to force Steam to use Spacewar");
+                _appIdFileCreated = true;
+
+                Environment.SetEnvironmentVariable("SteamAppId", SPOOFED_APP_ID.ToString());
+                Environment.SetEnvironmentVariable("SteamGameId", SPOOFED_APP_ID.ToString());
+                Plugin.Log.LogInfo($"Set environment variables SteamAppId and SteamGameId to {SPOOFED_APP_ID}");
+            }
+            catch (Exception ex)
+            {
+                Plugin.Log.LogError($"Failed to force App ID: {ex.Message}");
+            }
+        }
         [HarmonyPrefix]
         [HarmonyPatch(typeof(SteamAPI), "RestartAppIfNecessary")]
-        public static bool RestartAppIfNecessary_Prefix(AppId_t unOwnAppID, ref bool __result)
+        public static bool RestartAppIfNecessary_Prefix(ref AppId_t unOwnAppID, ref bool __result)
         {
-            Plugin.Log.LogInfo($"SteamAPI.RestartAppIfNecessary called with App ID: {unOwnAppID.m_AppId}, returning false to prevent restart");
+            Plugin.Log.LogInfo($"SteamAPI.RestartAppIfNecessary called with App ID: {unOwnAppID.m_AppId}, forcing to {SPOOFED_APP_ID} and preventing restart");
             
+            unOwnAppID = new AppId_t(SPOOFED_APP_ID);
             __result = false;
             return false;
         }
@@ -38,20 +67,22 @@ namespace VeeTaikoCrack
         }
         [HarmonyPrefix]
         [HarmonyPatch(typeof(SteamApps), "BIsSubscribedApp")]
-        public static bool BIsSubscribedApp_Prefix(AppId_t appID, ref bool __result)
+        public static bool BIsSubscribedApp_Prefix(ref AppId_t appID, ref bool __result)
         {
-            Plugin.Log.LogInfo($"SteamApps.BIsSubscribedApp called with App ID: {appID.m_AppId}, returning true for spoofed app");
+            Plugin.Log.LogInfo($"SteamApps.BIsSubscribedApp called with App ID: {appID.m_AppId}, forcing to {SPOOFED_APP_ID} and returning true");
             
-            __result = appID.m_AppId == SPOOFED_APP_ID;
+            appID = new AppId_t(SPOOFED_APP_ID);
+            __result = true;
             return false;
         }
         [HarmonyPrefix]
         [HarmonyPatch(typeof(SteamApps), "BIsAppInstalled")]
-        public static bool BIsAppInstalled_Prefix(AppId_t appID, ref bool __result)
+        public static bool BIsAppInstalled_Prefix(ref AppId_t appID, ref bool __result)
         {
-            Plugin.Log.LogInfo($"SteamApps.BIsAppInstalled called with App ID: {appID.m_AppId}, returning true for spoofed app");
+            Plugin.Log.LogInfo($"SteamApps.BIsAppInstalled called with App ID: {appID.m_AppId}, forcing to {SPOOFED_APP_ID} and returning true");
             
-            __result = appID.m_AppId == SPOOFED_APP_ID;
+            appID = new AppId_t(SPOOFED_APP_ID);
+            __result = true;
             return false;
         }
         [HarmonyPostfix]
@@ -110,6 +141,30 @@ namespace VeeTaikoCrack
         {
             Plugin.Log.LogInfo("Spoofing Steam login status to logged in");
             __result = true;
+        }
+
+        [HarmonyPrefix]
+        [HarmonyPatch(typeof(SteamApps), "BIsDlcInstalled")]
+        public static bool BIsDlcInstalled_Prefix(ref AppId_t appID, ref bool __result)
+        {
+            Plugin.Log.LogInfo($"SteamApps.BIsDlcInstalled called with App ID: {appID.m_AppId}, forcing to {SPOOFED_APP_ID}");
+            appID = new AppId_t(SPOOFED_APP_ID);
+            __result = true;
+            return false;
+        }
+
+        [HarmonyPrefix]
+        [HarmonyPatch(typeof(SteamApps), "GetCurrentGameLanguage")]
+        public static void GetCurrentGameLanguage_Prefix()
+        {
+            ForceAppId();
+        }
+
+        [HarmonyPrefix]
+        [HarmonyPatch(typeof(SteamUser), "GetSteamID")]
+        public static void GetSteamID_Prefix()
+        {
+            ForceAppId();
         }
     }
 }
