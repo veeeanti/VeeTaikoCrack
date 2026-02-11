@@ -1,272 +1,491 @@
 using System;
-using System.Security.Permissions;
+using System.Threading.Tasks;
 using HarmonyLib;
-
-[assembly: SecurityPermission(SecurityAction.RequestMinimum, SkipVerification = true)]
+using UnityEngine;
 
 namespace VeeTaikoCrack
 {
     [HarmonyPatch]
     public class PlayFabPatches
     {
-        // Enhanced to simulate Steam-based authentication for better compatibility
-        // Helper method to get Steam ID for token generation
-        private static ulong GetSteamIdForToken()
-        {
-            // Try to get the actual Steam ID if Steam is initialized
-            try
-            {
-                // Use reflection to safely access Steam components to avoid direct dependency
-                var steamApiType = Type.GetType("Steamworks.SteamAPI, Assembly-CSharp") ??
-                                  Type.GetType("Steamworks.SteamAPI");
-                if (steamApiType != null)
-                {
-                    var isSteamRunningMethod = steamApiType.GetMethod("IsSteamRunning",
-                        System.Reflection.BindingFlags.Static | System.Reflection.BindingFlags.Public);
-                    if (isSteamRunningMethod != null)
-                    {
-                        var isRunning = (bool)(isSteamRunningMethod.Invoke(null, new object[0]) ?? false);
-                        if (isRunning)
-                        {
-                            var steamUserType = Type.GetType("Steamworks.SteamUser, Assembly-CSharp") ??
-                                              Type.GetType("Steamworks.SteamUser");
-                            if (steamUserType != null)
-                            {
-                                var getSteamIdMethod = steamUserType.GetMethod("GetSteamID",
-                                    System.Reflection.BindingFlags.Static | System.Reflection.BindingFlags.Public);
-                                if (getSteamIdMethod != null)
-                                {
-                                    var steamIdObj = getSteamIdMethod.Invoke(null, new object[0]);
-                                    if (steamIdObj != null)
-                                    {
-                                        var steamIdValue = steamIdObj.GetType().GetProperty("m_SteamID");
-                                        if (steamIdValue != null)
-                                        {
-                                            var steamId = (ulong)steamIdValue.GetValue(steamIdObj);
-                                            Plugin.Log.LogInfo($"Using actual Steam ID for PlayFab token: {steamId}");
-                                            return steamId;
-                                        }
-                                    }
-                                }
-                            }
-                        }
-                    }
-                }
-            }
-            catch (Exception ex)
-            {
-                // If Steam isn't available or there's an error, use a default/fake Steam ID
-                Plugin.Log.LogWarning($"Error accessing Steam for PlayFab token: {ex.Message}, using default Steam ID");
-            }
-            
-            // Return a reasonable default Steam ID
-            return 76561198000000000UL; // Standard format Steam ID base
-        }
+        // Store the authenticated entity key (using object to avoid IL2CPP type dependencies)
+        private static object _localPlayerEntityKey;
+        private static string _playFabUserId;
+        private static bool _isAuthenticated = false;
         
-        // Helper method to call CreateLocalUser with reflection to avoid type dependency issues
-        private static void CallCreateLocalUser(object managerInstance, string entityId, string entityType, string entityToken)
-        {
-            try
-            {
-                // Create EntityKey object via reflection to avoid direct dependency
-                var entityKeyType = Type.GetType("PlayFab.ClientModels.EntityKey, Assembly-CSharp") ??
-                                   Type.GetType("PlayFab.ClientModels.EntityKey");
-                if (entityKeyType != null)
-                {
-                    var entityKeyInstance = Activator.CreateInstance(entityKeyType);
-                    entityKeyType.GetProperty("Id")?.SetValue(entityKeyInstance, entityId);
-                    entityKeyType.GetProperty("Type")?.SetValue(entityKeyInstance, entityType);
-                    
-                    var method = managerInstance.GetType().GetMethod("_CreateLocalUser",
-                        System.Reflection.BindingFlags.NonPublic | System.Reflection.BindingFlags.Instance);
-                    if (method != null)
-                    {
-                        method.Invoke(managerInstance, new object[] { entityKeyInstance, entityToken });
-                    }
-                }
-            }
-            catch (Exception ex)
-            {
-                Plugin.Log.LogWarning($"Error in CallCreateLocalUser: {ex.Message}");
-                // Fallback: try to advance the state directly
-                var setStateMethod = managerInstance.GetType().GetMethod("_SetPlayFabMultiplayerManagerInternalState",
-                    System.Reflection.BindingFlags.NonPublic | System.Reflection.BindingFlags.Instance);
-                if (setStateMethod != null)
-                {
-                    setStateMethod.Invoke(managerInstance, new object[] { 4 }); // LocalUserCreated state
-                }
-            }
-        }
-
-        // Patch the GetEntityTokenCompleted method - called when entity token is successfully retrieved
-        [HarmonyPrefix]
-        [HarmonyPatch(typeof(PlayFab.Party.PlayFabMultiplayerManager), "GetEntityTokenCompleted")]
-        public static bool GetEntityTokenCompleted_Prefix(object __instance, object response)
-        {
-            Plugin.Log.LogInfo("PlayFab GetEntityTokenCompleted - bypassing for multiplayer compatibility with Steam-based credentials");
-            // Instead of calling the original, we'll simulate success with Steam-based credentials
-            var steamId = GetSteamIdForToken();
-            var entityId = $"Ent{{{Guid.NewGuid()}}}-steam-{steamId}";
-            var entityToken = $"steam-derived-token-{steamId}-{DateTime.UtcNow.Ticks}";
-            CallCreateLocalUser(__instance, entityId, "title_player_account", entityToken);
-            return false; // Skip original method
-        }
-
-        // Patch the GetEntityTokenFailed method to prevent failure and maintain multiplayer capability
-        [HarmonyPrefix]
-        [HarmonyPatch(typeof(PlayFab.Party.PlayFabMultiplayerManager), "GetEntityTokenFailed")]
-        public static bool GetEntityTokenFailed_Prefix(object __instance, object error)
-        {
-            Plugin.Log.LogInfo("PlayFab GetEntityTokenFailed intercepted - simulating success with Steam-based credentials for multiplayer");
-            // Instead of processing the failure, we'll simulate success with Steam-based credentials as if authentication worked
-            var steamId = GetSteamIdForToken();
-            var entityId = $"Ent{{{Guid.NewGuid()}}}-steam-{steamId}";
-            var entityToken = $"steam-derived-token-{steamId}-{DateTime.UtcNow.Ticks}";
-            CallCreateLocalUser(__instance, entityId, "title_player_account", entityToken);
-            return false; // Skip original method
-        }
+        // Configuration
+        private const int MAX_AUTH_RETRIES = 5;
+        private const string PLAYFAB_TITLE_ID = "AAC05"; 
         
-        // Patch the AuthenticateLocalUserStart method to skip the actual authentication
         [HarmonyPrefix]
         [HarmonyPatch(typeof(PlayFab.Party.PlayFabMultiplayerManager), "AuthenticateLocalUserStart")]
         public static bool AuthenticateLocalUserStart_Prefix(object __instance)
         {
-            Plugin.Log.LogInfo("PlayFab AuthenticateLocalUserStart - bypassing for multiplayer compatibility with Steam-based credentials");
-            // Instead of doing real authentication, generate Steam-based credentials and advance state
-            var steamId = GetSteamIdForToken();
-            var entityId = $"Ent{{{Guid.NewGuid()}}}-steam-{steamId}";
-            var entityToken = $"steam-derived-token-{steamId}-{DateTime.UtcNow.Ticks}";
-            CallCreateLocalUser(__instance, entityId, "title_player_account", entityToken);
-            return false; // Skip original method
+            try
+            {
+                Plugin.Log.LogInfo("PlayFab AuthenticateLocalUserStart - using custom Steam authentication");
+                
+                // Start authentication asynchronously without blocking
+                _ = AuthenticateAsync(__instance);
+                
+                // Skip the original method
+                return false;
+            }
+            catch (Exception ex)
+            {
+                Plugin.Log.LogError($"Error in AuthenticateLocalUserStart_Prefix: {ex.Message}");
+                Plugin.Log.LogError(ex.StackTrace);
+                return true; // Allow original method to run on error
+            }
         }
         
-        // Patch the CreateAndJoinNetworkImplStart method to bypass network creation restrictions
+        private static async Task AuthenticateAsync(object managerInstance)
+        {
+            try
+            {
+                // If already authenticated, just create the local user
+                if (_isAuthenticated && _localPlayerEntityKey != null)
+                {
+                    Plugin.Log.LogInfo("Already authenticated, creating local user");
+                    CreateLocalUser(managerInstance, _localPlayerEntityKey, _playFabUserId);
+                    return;
+                }
+                
+                // Attempt to login with Custom ID
+                var result = await LoginWithCustomID();
+                
+                if (result.Success)
+                {
+                    _isAuthenticated = true;
+                    _localPlayerEntityKey = result.EntityKey;
+                    _playFabUserId = result.UserId;
+                    
+                    Plugin.Log.LogInfo($"PlayFab authentication successful! Entity ID: {GetEntityId(result.EntityKey)}");
+                    
+                    // Create the local user in the multiplayer manager
+                    CreateLocalUser(managerInstance, result.EntityKey, result.UserId);
+                }
+                else
+                {
+                    Plugin.Log.LogError("PlayFab authentication failed!");
+                    
+                    // Fallback: Create a fake entity to allow the game to continue
+                    CreateFallbackLocalUser(managerInstance);
+                }
+            }
+            catch (Exception ex)
+            {
+                Plugin.Log.LogError($"Error during PlayFab authentication: {ex.Message}");
+                Plugin.Log.LogError(ex.StackTrace);
+                
+                // Fallback: Create a fake entity to allow the game to continue
+                CreateFallbackLocalUser(managerInstance);
+            }
+        }
+        
+        private static async Task<AuthenticationResult> LoginWithCustomID()
+        {
+            // Get device unique identifier as the custom ID
+            string customId = SystemInfo.deviceUniqueIdentifier;
+            Plugin.Log.LogInfo($"Using Custom ID: {customId}");
+            
+            int retries = 0;
+            
+            // Retry loop
+            while (retries < MAX_AUTH_RETRIES)
+            {
+                try
+                {
+                    var tcs = new TaskCompletionSource<object>();
+                    
+                    // Use reflection to call PlayFabClientAPI.LoginWithCustomID
+                    var playFabClientAPIType = Type.GetType("PlayFab.PlayFabClientAPI, PlayFab");
+                    var loginRequestType = Type.GetType("PlayFab.ClientModels.LoginWithCustomIDRequest, PlayFab");
+                    
+                    if (playFabClientAPIType == null || loginRequestType == null)
+                    {
+                        Plugin.Log.LogError("Could not find PlayFab types");
+                        return new AuthenticationResult { Success = false };
+                    }
+                    
+                    // Create the login request with CreateAccount enabled
+                    var loginRequest = Activator.CreateInstance(loginRequestType);
+                    loginRequestType.GetProperty("TitleId")?.SetValue(loginRequest, PLAYFAB_TITLE_ID);
+                    loginRequestType.GetProperty("CustomId")?.SetValue(loginRequest, customId);
+                    loginRequestType.GetProperty("CreateAccount")?.SetValue(loginRequest, true); // Auto-create new accounts
+                    
+                    Plugin.Log.LogInfo($"Attempting PlayFab login with CustomID: {customId} (CreateAccount: true)");
+                    
+                    // Create callbacks
+                    var resultCallbackType = Type.GetType("PlayFab.ClientModels.LoginResult, PlayFab");
+                    var errorCallbackType = Type.GetType("PlayFab.PlayFabError, PlayFab");
+                    
+                    var successCallbackType = typeof(Action<>).MakeGenericType(resultCallbackType);
+                    var errorCallbackType2 = typeof(Action<>).MakeGenericType(errorCallbackType);
+                    
+                    var successMethod = typeof(PlayFabPatches).GetMethod(nameof(OnLoginSuccess),
+                        System.Reflection.BindingFlags.NonPublic | System.Reflection.BindingFlags.Static);
+                    var errorMethod = typeof(PlayFabPatches).GetMethod(nameof(OnLoginError),
+                        System.Reflection.BindingFlags.NonPublic | System.Reflection.BindingFlags.Static);
+                    
+                    if (successMethod == null || errorMethod == null)
+                    {
+                        Plugin.Log.LogError("Could not find callback methods");
+                        return new AuthenticationResult { Success = false };
+                    }
+                    
+                    var successCallback = Delegate.CreateDelegate(successCallbackType,
+                        successMethod.MakeGenericMethod(resultCallbackType));
+                    
+                    var errorCallback = Delegate.CreateDelegate(errorCallbackType2,
+                        errorMethod.MakeGenericMethod(errorCallbackType));
+                    
+                    // Store TCS in a static field so callbacks can access it
+                    _currentLoginTcs = tcs;
+                    
+                    // Call LoginWithCustomID
+                    var loginMethod = playFabClientAPIType.GetMethod("LoginWithCustomID");
+                    loginMethod?.Invoke(null, new object[] { loginRequest, successCallback, errorCallback, null, null });
+                    
+                    var loginResult = await tcs.Task;
+                    
+                    if (loginResult != null)
+                    {
+                        // Extract entity key and user ID from result
+                        var entityTokenProp = loginResult.GetType().GetProperty("EntityToken");
+                        var entityToken = entityTokenProp?.GetValue(loginResult);
+                        var entityProp = entityToken?.GetType().GetProperty("Entity");
+                        var entityKey = entityProp?.GetValue(entityToken);
+                        
+                        var playFabIdProp = loginResult.GetType().GetProperty("PlayFabId");
+                        var playFabId = playFabIdProp?.GetValue(loginResult) as string;
+                        
+                        // Check if this was a new account creation
+                        var newlyCreatedProp = loginResult.GetType().GetProperty("NewlyCreated");
+                        var newlyCreated = newlyCreatedProp?.GetValue(loginResult) as bool? ?? false;
+                        
+                        Plugin.Log.LogInfo($"PlayFab login successful! PlayFabId: {playFabId}, NewlyCreated: {newlyCreated}");
+                        
+                        // Success!
+                        return new AuthenticationResult
+                        {
+                            Success = true,
+                            UserId = playFabId,
+                            EntityKey = entityKey
+                        };
+                    }
+                    
+                    // Failed, retry
+                    await Task.Delay(1000);
+                    retries++;
+                }
+                catch (Exception ex)
+                {
+                    Plugin.Log.LogError($"Exception during login attempt {retries + 1}: {ex.Message}");
+                    await Task.Delay(1000);
+                    retries++;
+                }
+            }
+            
+            // Max retries reached
+            return new AuthenticationResult { Success = false };
+        }
+        
+        private static TaskCompletionSource<object> _currentLoginTcs;
+        
+        private static void OnLoginSuccess<T>(T result)
+        {
+            _currentLoginTcs?.SetResult(result);
+        }
+        
+        private static void OnLoginError<T>(T error)
+        {
+            try
+            {
+                if (error != null)
+                {
+                    var errorType = error.GetType();
+                    var errorMessageProp = errorType.GetProperty("ErrorMessage");
+                    var errorCodeProp = errorType.GetProperty("Error");
+                    var httpCodeProp = errorType.GetProperty("HttpCode");
+                    
+                    var errorMessage = errorMessageProp?.GetValue(error) as string ?? "Unknown error";
+                    var errorCode = errorCodeProp?.GetValue(error)?.ToString() ?? "Unknown";
+                    var httpCode = httpCodeProp?.GetValue(error)?.ToString() ?? "Unknown";
+                    
+                    Plugin.Log.LogError($"PlayFab login error - Code: {errorCode}, HTTP: {httpCode}, Message: {errorMessage}");
+                }
+                else
+                {
+                    Plugin.Log.LogError("PlayFab login error - No error details available");
+                }
+            }
+            catch (Exception ex)
+            {
+                Plugin.Log.LogError($"PlayFab login error (failed to parse error details): {ex.Message}");
+            }
+            
+            _currentLoginTcs?.SetResult(null);
+        }
+        
+        private static string GetEntityId(object entityKey)
+        {
+            if (entityKey == null) return "null";
+            var idProp = entityKey.GetType().GetProperty("Id");
+            return idProp?.GetValue(entityKey) as string ?? "unknown";
+        }
+        
+        /// <summary>
+        /// Creates a local user in the PlayFab multiplayer manager.
+        /// </summary>
+        private static void CreateLocalUser(object managerInstance, object entityKey, string userId)
+        {
+            if (managerInstance == null)
+            {
+                Plugin.Log.LogError("CreateLocalUser: managerInstance is null");
+                return;
+            }
+            
+            try
+            {
+                // Call _CreateLocalUser using reflection
+                var method = managerInstance.GetType().GetMethod("_CreateLocalUser",
+                    System.Reflection.BindingFlags.NonPublic | System.Reflection.BindingFlags.Instance);
+                
+                if (method != null)
+                {
+                    method.Invoke(managerInstance, new object[] { entityKey, userId });
+                    Plugin.Log.LogInfo("Local user created successfully");
+                }
+                else
+                {
+                    Plugin.Log.LogWarning("Could not find _CreateLocalUser method, trying state advancement");
+                    AdvanceToAuthenticatedState(managerInstance);
+                }
+            }
+            catch (System.Reflection.TargetInvocationException ex)
+            {
+                Plugin.Log.LogError($"Error invoking _CreateLocalUser: {ex.InnerException?.Message ?? ex.Message}");
+                if (ex.InnerException != null)
+                {
+                    Plugin.Log.LogError(ex.InnerException.StackTrace);
+                }
+                AdvanceToAuthenticatedState(managerInstance);
+            }
+            catch (Exception ex)
+            {
+                Plugin.Log.LogError($"Error creating local user: {ex.Message}");
+                Plugin.Log.LogError(ex.StackTrace);
+                AdvanceToAuthenticatedState(managerInstance);
+            }
+        }
+        
+        private static void CreateFallbackLocalUser(object managerInstance)
+        {
+            Plugin.Log.LogWarning("Creating fallback local user");
+            
+            // Create a fake entity key using reflection
+            var entityKeyType = Type.GetType("PlayFab.ClientModels.EntityKey, PlayFab");
+            if (entityKeyType != null)
+            {
+                var fakeEntityKey = Activator.CreateInstance(entityKeyType);
+                entityKeyType.GetProperty("Id")?.SetValue(fakeEntityKey, $"FakeEntity_{Guid.NewGuid()}");
+                entityKeyType.GetProperty("Type")?.SetValue(fakeEntityKey, "title_player_account");
+                
+                _localPlayerEntityKey = fakeEntityKey;
+                _playFabUserId = $"FakeUser_{Guid.NewGuid()}";
+                _isAuthenticated = true;
+                
+                CreateLocalUser(managerInstance, fakeEntityKey, _playFabUserId);
+            }
+            else
+            {
+                Plugin.Log.LogError("Could not create fallback entity key");
+                AdvanceToAuthenticatedState(managerInstance);
+            }
+        }
+        
+        private static void AdvanceToAuthenticatedState(object managerInstance)
+        {
+            try
+            {
+                var setStateMethod = managerInstance.GetType().GetMethod("_SetPlayFabMultiplayerManagerInternalState",
+                    System.Reflection.BindingFlags.NonPublic | System.Reflection.BindingFlags.Instance);
+                
+                if (setStateMethod != null)
+                {
+                    // State 5 = LocalUserAuthenticated
+                    setStateMethod.Invoke(managerInstance, new object[] { 5 });
+                    Plugin.Log.LogInfo("Advanced to LocalUserAuthenticated state");
+                }
+            }
+            catch (Exception ex)
+            {
+                Plugin.Log.LogError($"Error advancing state: {ex.Message}");
+            }
+        }
+        
+        [HarmonyPrefix]
+        [HarmonyPatch(typeof(PlayFab.Party.PlayFabMultiplayerManager), "GetEntityTokenCompleted")]
+        public static bool GetEntityTokenCompleted_Prefix(object __instance, object response)
+        {
+            try
+            {
+                Plugin.Log.LogInfo("PlayFab GetEntityTokenCompleted - using cached authentication");
+                
+                if (_isAuthenticated && _localPlayerEntityKey != null)
+                {
+                    CreateLocalUser(__instance, _localPlayerEntityKey, _playFabUserId);
+                }
+                else
+                {
+                    // Trigger authentication without blocking
+                    _ = AuthenticateAsync(__instance);
+                }
+                
+                return false; // Skip original method
+            }
+            catch (Exception ex)
+            {
+                Plugin.Log.LogError($"Error in GetEntityTokenCompleted_Prefix: {ex.Message}");
+                Plugin.Log.LogError(ex.StackTrace);
+                return true; // Allow original method to run on error
+            }
+        }
+        
+        [HarmonyPrefix]
+        [HarmonyPatch(typeof(PlayFab.Party.PlayFabMultiplayerManager), "GetEntityTokenFailed")]
+        public static bool GetEntityTokenFailed_Prefix(object __instance, object error)
+        {
+            try
+            {
+                Plugin.Log.LogWarning("PlayFab GetEntityTokenFailed - attempting custom authentication");
+                
+                // Trigger authentication without blocking
+                _ = AuthenticateAsync(__instance);
+                
+                return false; // Skip original method
+            }
+            catch (Exception ex)
+            {
+                Plugin.Log.LogError($"Error in GetEntityTokenFailed_Prefix: {ex.Message}");
+                Plugin.Log.LogError(ex.StackTrace);
+                return true; // Allow original method to run on error
+            }
+        }
+        
         [HarmonyPrefix]
         [HarmonyPatch(typeof(PlayFab.Party.PlayFabMultiplayerManager), "CreateAndJoinNetworkImplStart")]
         public static bool CreateAndJoinNetworkImplStart_Prefix(object __instance, object networkConfiguration)
         {
-            Plugin.Log.LogInfo("PlayFab CreateAndJoinNetworkImplStart - bypassing for multiplayer compatibility");
-            // Move to the complete state directly to bypass network creation
-            var completeMethod = __instance.GetType().GetMethod("CreateAndJoinNetworkImplComplete",
-                System.Reflection.BindingFlags.NonPublic | System.Reflection.BindingFlags.Instance);
-            if (completeMethod != null)
+            try
             {
-                completeMethod.Invoke(__instance, new object[] { networkConfiguration });
-            }
-            else
-            {
-                // Fallback: advance state manually
-                var setStateMethod = __instance.GetType().GetMethod("_SetPlayFabMultiplayerManagerInternalState",
-                    System.Reflection.BindingFlags.NonPublic | System.Reflection.BindingFlags.Instance);
-                if (setStateMethod != null)
+                Plugin.Log.LogInfo("PlayFab CreateAndJoinNetworkImplStart - bypassing for compatibility");
+                
+                if (__instance == null)
                 {
-                    setStateMethod.Invoke(__instance, new object[] { 5 }); // LocalUserAuthenticated state
+                    Plugin.Log.LogError("CreateAndJoinNetworkImplStart: __instance is null");
+                    return true;
                 }
+                
+                // Try to call the complete method
+                var completeMethod = __instance.GetType().GetMethod("CreateAndJoinNetworkImplComplete",
+                    System.Reflection.BindingFlags.NonPublic | System.Reflection.BindingFlags.Instance);
+                
+                if (completeMethod != null)
+                {
+                    completeMethod.Invoke(__instance, new object[] { networkConfiguration });
+                }
+                else
+                {
+                    // Fallback: advance state
+                    AdvanceToAuthenticatedState(__instance);
+                }
+                
+                return false; // Skip original method
             }
-            return false; // Skip original method
+            catch (System.Reflection.TargetInvocationException ex)
+            {
+                Plugin.Log.LogError($"Error invoking CreateAndJoinNetworkImplComplete: {ex.InnerException?.Message ?? ex.Message}");
+                if (ex.InnerException != null)
+                {
+                    Plugin.Log.LogError(ex.InnerException.StackTrace);
+                }
+                return true; // Allow original method to run on error
+            }
+            catch (Exception ex)
+            {
+                Plugin.Log.LogError($"Error in CreateAndJoinNetworkImplStart: {ex.Message}");
+                Plugin.Log.LogError(ex.StackTrace);
+                return true; // Allow original method to run on error
+            }
         }
         
-        // Patch the JoinNetworkImplStart method to bypass network joining restrictions
         [HarmonyPrefix]
         [HarmonyPatch(typeof(PlayFab.Party.PlayFabMultiplayerManager), "JoinNetworkImplStart")]
         public static bool JoinNetworkImplStart_Prefix(object __instance, string networkId)
         {
-            Plugin.Log.LogInfo("PlayFab JoinNetworkImplStart - bypassing for multiplayer compatibility");
-            // Move to the complete state directly to bypass network joining
-            var completeMethod = __instance.GetType().GetMethod("JoinNetworkImplComplete",
-                System.Reflection.BindingFlags.NonPublic | System.Reflection.BindingFlags.Instance);
-            if (completeMethod != null)
+            try
             {
-                completeMethod.Invoke(__instance, new object[] { networkId });
-            }
-            else
-            {
-                // Fallback: advance state manually
-                var setStateMethod = __instance.GetType().GetMethod("_SetPlayFabMultiplayerManagerInternalState",
+                Plugin.Log.LogInfo($"PlayFab JoinNetworkImplStart - bypassing for network {networkId}");
+                
+                if (__instance == null)
+                {
+                    Plugin.Log.LogError("JoinNetworkImplStart: __instance is null");
+                    return true;
+                }
+                
+                // Try to call the complete method
+                var completeMethod = __instance.GetType().GetMethod("JoinNetworkImplComplete",
                     System.Reflection.BindingFlags.NonPublic | System.Reflection.BindingFlags.Instance);
-                if (setStateMethod != null)
+                
+                if (completeMethod != null)
                 {
-                    setStateMethod.Invoke(__instance, new object[] { 6 }); // ConnectedToNetwork state
+                    completeMethod.Invoke(__instance, new object[] { networkId });
                 }
+                else
+                {
+                    // Fallback: set state to ConnectedToNetwork (6)
+                    var setStateMethod = __instance.GetType().GetMethod("_SetPlayFabMultiplayerManagerInternalState",
+                        System.Reflection.BindingFlags.NonPublic | System.Reflection.BindingFlags.Instance);
+                    
+                    if (setStateMethod != null)
+                    {
+                        setStateMethod.Invoke(__instance, new object[] { 6 });
+                    }
+                }
+                
+                return false; // Skip original method
             }
-            return false; // Skip original method
+            catch (System.Reflection.TargetInvocationException ex)
+            {
+                Plugin.Log.LogError($"Error invoking JoinNetworkImplComplete: {ex.InnerException?.Message ?? ex.Message}");
+                if (ex.InnerException != null)
+                {
+                    Plugin.Log.LogError(ex.InnerException.StackTrace);
+                }
+                return true; // Allow original method to run on error
+            }
+            catch (Exception ex)
+            {
+                Plugin.Log.LogError($"Error in JoinNetworkImplStart: {ex.Message}");
+                Plugin.Log.LogError(ex.StackTrace);
+                return true; // Allow original method to run on error
+            }
         }
         
-        // Patch the JoinNetworkImplComplete method to ensure network join completes properly
-        [HarmonyPrefix]
-        [HarmonyPatch(typeof(PlayFab.Party.PlayFabMultiplayerManager), "JoinNetworkImplComplete")]
-        public static bool JoinNetworkImplComplete_Prefix(object __instance, string networkId)
+        public static void Cleanup()
         {
-            Plugin.Log.LogInfo("PlayFab JoinNetworkImplComplete - ensuring network connection state");
-            // Advance to connected state directly
-            var setStateMethod = __instance.GetType().GetMethod("_SetPlayFabMultiplayerManagerInternalState",
-                System.Reflection.BindingFlags.NonPublic | System.Reflection.BindingFlags.Instance);
-            if (setStateMethod != null)
-            {
-                setStateMethod.Invoke(__instance, new object[] { 6 }); // ConnectedToNetwork state
-            }
-            
-            // Trigger the network joined event to notify the game
-            var eventField = __instance.GetType().GetField("OnNetworkJoined",
-                System.Reflection.BindingFlags.Public | System.Reflection.BindingFlags.Instance);
-            if (eventField != null)
-            {
-                var onNetworkJoinedDelegate = eventField.GetValue(__instance) as System.Delegate;
-                if (onNetworkJoinedDelegate != null)
-                {
-                    foreach (System.Delegate handler in onNetworkJoinedDelegate.GetInvocationList())
-                    {
-                        try
-                        {
-                            handler.DynamicInvoke(__instance, networkId);
-                        }
-                        catch (System.Exception ex)
-                        {
-                            Plugin.Log.LogWarning($"Error invoking OnNetworkJoined handler: {ex.Message}");
-                        }
-                    }
-                }
-            }
-            
-            // Also call _UpdateNetworkId to set the network descriptor
-            var updateNetworkIdMethod = __instance.GetType().GetMethod("UpdateNetworkId",
-                System.Reflection.BindingFlags.NonPublic | System.Reflection.BindingFlags.Instance);
-            if (updateNetworkIdMethod != null)
-            {
-                // Create a fake party network descriptor
-                var partyNetworkDescriptorType = System.Type.GetType("PartyCSharpSDK.PARTY_NETWORK_DESCRIPTOR, Assembly-CSharp") ??
-                                               System.Type.GetType("PartyCSharpSDK.PARTY_NETWORK_DESCRIPTOR");
-                if (partyNetworkDescriptorType != null)
-                {
-                    var fakeDescriptor = System.Activator.CreateInstance(partyNetworkDescriptorType);
-                    try
-                    {
-                        updateNetworkIdMethod.Invoke(__instance, new object[] { networkId, fakeDescriptor });
-                    }
-                    catch (System.Exception ex)
-                    {
-                        Plugin.Log.LogWarning($"Error calling UpdateNetworkId: {ex.Message}");
-                    }
-                }
-            }
-            
-            return false; // Skip original method
+            _isAuthenticated = false;
+            _localPlayerEntityKey = null;
+            _playFabUserId = null;
         }
-        
-        // Patch the LeaveNetworkImpl method to handle leaving networks gracefully
-        [HarmonyPrefix]
-        [HarmonyPatch(typeof(PlayFab.Party.PlayFabMultiplayerManager), "LeaveNetworkImpl")]
-        public static bool LeaveNetworkImpl_Prefix(object __instance, bool wasCallInitiatedByDeveloper)
-        {
-            Plugin.Log.LogInfo("PlayFab LeaveNetworkImpl - bypassing for multiplayer stability");
-            // Don't actually leave the network, just reset state to maintain stability
-            var setStateMethod = __instance.GetType().GetMethod("_SetPlayFabMultiplayerManagerInternalState",
-                System.Reflection.BindingFlags.NonPublic | System.Reflection.BindingFlags.Instance);
-            if (setStateMethod != null)
-            {
-                setStateMethod.Invoke(__instance, new object[] { 5 }); // Back to LocalUserAuthenticated state
-            }
-            return false; // Skip original method
-        }
+    }
+    
+    internal struct AuthenticationResult
+    {
+        public bool Success;
+        public string UserId;
+        public object EntityKey; // Using object to avoid IL2CPP type dependency
     }
 }
